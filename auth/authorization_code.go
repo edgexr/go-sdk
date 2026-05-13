@@ -57,6 +57,22 @@ type AuthorizationArgs struct {
 	URL string
 }
 
+type TokenStore interface {
+	SaveToken(ctx context.Context, token *oauth2.Token) error
+	LoadToken(ctx context.Context) (*oauth2.Token, error)
+}
+
+type DefaultTokenStore struct {
+}
+
+func (s *DefaultTokenStore) SaveToken(ctx context.Context, token *oauth2.Token) error {
+	return nil
+}
+
+func (s *DefaultTokenStore) LoadToken(ctx context.Context) (*oauth2.Token, error) {
+	return nil, nil
+}
+
 // AuthorizationCodeFetcher is called to initiate the OAuth authorization flow.
 // It is responsible for directing the user to the authorization URL (e.g., opening
 // in a browser) and returning the authorization code and state once the Authorization
@@ -119,6 +135,8 @@ type AuthorizationCodeHandlerConfig struct {
 	// https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#server-side-request-forgery-ssrf
 	// If not provided, http.DefaultClient will be used.
 	Client *http.Client
+
+	TokenStore TokenStore
 }
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
@@ -159,6 +177,10 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 			return nil, fmt.Errorf("invalid PreregisteredClient configuration: %w", err)
 		}
 	}
+	if config.TokenStore == nil {
+		config.TokenStore = &DefaultTokenStore{}
+	}
+
 	dCfg := config.DynamicClientRegistrationConfig
 	if dCfg != nil {
 		if dCfg.Metadata == nil {
@@ -299,6 +321,12 @@ func (h *AuthorizationCodeHandler) Authorize(ctx context.Context, req *http.Requ
 		},
 		RedirectURL: h.config.RedirectURL,
 		Scopes:      scps,
+	}
+
+	// check if token saved
+	if token, err := h.config.TokenStore.LoadToken(ctx); err == nil && token != nil {
+		h.tokenSource = cfg.TokenSource(ctx, token)
+		return nil
 	}
 
 	authRes, err := h.getAuthorizationCode(ctx, cfg, prm.Resource)
@@ -556,5 +584,8 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
 	h.tokenSource = cfg.TokenSource(clientCtx, token)
+	if err := h.config.TokenStore.SaveToken(ctx, token); err != nil {
+		return fmt.Errorf("failed to save token: %w", err)
+	}
 	return nil
 }
