@@ -2043,6 +2043,7 @@ func (c *streamableClientConn) setMCPHeaders(req *http.Request) error {
 					return err
 				}
 			} else if token != nil {
+				fmt.Printf("set bearer to %s\n", token.AccessToken)
 				req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 			}
 		}
@@ -2141,20 +2142,39 @@ func (c *streamableClientConn) handleSSE(ctx context.Context, requestSummary str
 	}
 }
 
+type ResponseError struct {
+	Body       []byte
+	Headers    http.Header
+	StatusCode int
+}
+
+func (e *ResponseError) Error() string {
+	return http.StatusText(e.StatusCode)
+}
+
+func makeReponseError(resp *http.Response) *ResponseError {
+	defer resp.Body.Close()
+	re := &ResponseError{
+		Headers:    resp.Header,
+		StatusCode: resp.StatusCode,
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err == nil {
+		re.Body = body
+	}
+	return re
+}
+
 // checkResponse checks the status code of the provided response, and
 // translates it into an error if the request was unsuccessful.
 //
 // The response body is close if a non-nil error is returned.
 func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.Response) (err error) {
-	defer func() {
-		if err != nil {
-			resp.Body.Close()
-		}
-	}()
 	// §2.5.3: "The server MAY terminate the session at any time, after
 	// which it MUST respond to requests containing that session ID with HTTP
 	// 404 Not Found."
 	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
 		// Return an ErrSessionMissing to avoid sending a redundant DELETE when the
 		// session is already gone.
 		return fmt.Errorf("%s: failed to connect (session ID: %v): %w", requestSummary, c.sessionID, ErrSessionMissing)
@@ -2162,10 +2182,10 @@ func (c *streamableClientConn) checkResponse(requestSummary string, resp *http.R
 	// Transient server errors (502, 503, 504, 429) should not break the connection.
 	// Wrap them with ErrRejected so the jsonrpc2 layer doesn't set writeErr.
 	if isTransientHTTPStatus(resp.StatusCode) {
-		return fmt.Errorf("%w: %s: %v", jsonrpc2.ErrRejected, requestSummary, http.StatusText(resp.StatusCode))
+		return fmt.Errorf("%w: %s: %w", jsonrpc2.ErrRejected, requestSummary, makeReponseError(resp))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s: %v", requestSummary, http.StatusText(resp.StatusCode))
+		return fmt.Errorf("%s: %w", requestSummary, makeReponseError(resp))
 	}
 	return nil
 }

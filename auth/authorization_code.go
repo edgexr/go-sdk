@@ -57,6 +57,30 @@ type AuthorizationArgs struct {
 	URL string
 }
 
+type TokenSource interface {
+	SetTokenSource(ctx context.Context, cfg *oauth2.Config, token *oauth2.Token) error
+	GetTokenSource(ctx context.Context) (oauth2.TokenSource, error)
+}
+
+type TokenData struct {
+	Endpoint oauth2.Endpoint
+	Scopes   []string
+	Token    *oauth2.Token
+}
+
+type DefaultTokenSource struct {
+	src oauth2.TokenSource
+}
+
+func (s *DefaultTokenSource) SetTokenSource(ctx context.Context, cfg *oauth2.Config, token *oauth2.Token) error {
+	s.src = cfg.TokenSource(ctx, token)
+	return nil
+}
+
+func (s *DefaultTokenSource) GetTokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	return s.src, nil
+}
+
 // AuthorizationCodeFetcher is called to initiate the OAuth authorization flow.
 // It is responsible for directing the user to the authorization URL (e.g., opening
 // in a browser) and returning the authorization code and state once the Authorization
@@ -119,6 +143,8 @@ type AuthorizationCodeHandlerConfig struct {
 	// https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#server-side-request-forgery-ssrf
 	// If not provided, http.DefaultClient will be used.
 	Client *http.Client
+
+	TokenSource TokenSource
 }
 
 // AuthorizationCodeHandler is an implementation of [OAuthHandler] that uses
@@ -133,7 +159,7 @@ type AuthorizationCodeHandler struct {
 var _ OAuthHandler = (*AuthorizationCodeHandler)(nil)
 
 func (h *AuthorizationCodeHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
-	return h.tokenSource, nil
+	return h.config.TokenSource.GetTokenSource(ctx)
 }
 
 // NewAuthorizationCodeHandler creates a new AuthorizationCodeHandler.
@@ -159,6 +185,10 @@ func NewAuthorizationCodeHandler(config *AuthorizationCodeHandlerConfig) (*Autho
 			return nil, fmt.Errorf("invalid PreregisteredClient configuration: %w", err)
 		}
 	}
+	if config.TokenSource == nil {
+		config.TokenSource = &DefaultTokenSource{}
+	}
+
 	dCfg := config.DynamicClientRegistrationConfig
 	if dCfg != nil {
 		if dCfg.Metadata == nil {
@@ -552,9 +582,9 @@ func (h *AuthorizationCodeHandler) exchangeAuthorizationCode(ctx context.Context
 	}
 	clientCtx := context.WithValue(ctx, oauth2.HTTPClient, h.config.Client)
 	token, err := cfg.Exchange(clientCtx, authResult.Code, opts...)
+	fmt.Printf("exchanged token: %v, err = %v\n", token, err)
 	if err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
-	h.tokenSource = cfg.TokenSource(clientCtx, token)
-	return nil
+	return h.config.TokenSource.SetTokenSource(clientCtx, cfg, token)
 }
